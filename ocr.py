@@ -4,32 +4,25 @@ from PIL import Image, ImageDraw
 from pdf2image import convert_from_path
 
 def draw_bounding_box(key, val, width, height, draw):
-    # If a key is Geometry, draw the bounding box info in it
     if "Geometry" in key:
-        # Draw bounding box information
         box = val["BoundingBox"]
         left = width * box['Left']
         top = height * box['Top']
         draw.rectangle([left, top, left + (width * box['Width']), top + (height * box['Height'])],
                        outline='black')
 
-# Takes a field as an argument and prints out the detected labels and values
 def print_labels_and_values(field):
-    # Only if labels are detected and returned
     if "LabelDetection" in field:
         print("Summary Label Detection - Confidence: {}".format(
             str(field.get("LabelDetection")["Confidence"])) + ", "
               + "Summary Values: {}".format(str(field.get("LabelDetection")["Text"])))
         print(field.get("LabelDetection")["Geometry"])
-    else:
-        print("Label Detection - No labels returned.")
     if "ValueDetection" in field:
         print("Summary Value Detection - Confidence: {}".format(
             str(field.get("ValueDetection")["Confidence"])) + ", "
               + "Summary Values: {}".format(str(field.get("ValueDetection")["Text"])))
         print(field.get("ValueDetection")["Geometry"])
-    else:
-        print("Value Detection - No values returned")
+    return
 
 def process_expense_analysis(client, document_path):
     """
@@ -72,7 +65,6 @@ def process_expense_analysis(client, document_path):
             print_labels_and_values(summary_field)
             print()
 
-        #For draw bounding boxes
         for line_item_group in expense_doc["LineItemGroups"]:
             for line_items in line_item_group["LineItems"]:
                 for expense_fields in line_items["LineItemExpenseFields"]:
@@ -399,15 +391,3 @@ def extract_complete_invoice_data(client, document_path):
         print(f"Table extraction error: {e}")
     
     return result
-
-def main():
-    # Example usage with local file
-    session = boto3.Session(profile_name='profile-name')
-    client = session.client('textract', region_name='us-east-1')
-    document_path = 'path/to/your/invoice.pdf'
-    process_expense_analysis(client, document_path)
-
-if __name__ == "__main__":
-    main()
-
-                  

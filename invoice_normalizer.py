@@ -591,23 +591,3 @@ def normalize_invoice_from_json(input_data: Dict) -> Dict:
     """
     normalizer = InvoiceNormalizer()
     return normalizer.normalize_invoice(input_data)
-
-
-if __name__ == '__main__':
-    # Example usage
-    import json
-    
-    # Load sample JSON
-    with open('output/20251105_213744_EMG.json', 'r', encoding='utf-8') as f:
-        ocr_json = json.load(f)
-    
-    input_data = {
-        'arquivo_id': '123',
-        'arquivo_nome': '20251105_213744_EMG.pdf',
-        'ocr_json': ocr_json,
-        'raw_text': ''
-    }
-    
-    result = normalize_invoice_from_json(input_data)
-    
-    print(json.dumps(result, indent=2, ensure_ascii=False))

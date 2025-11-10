@@ -25,7 +25,7 @@ def allowed_file(filename):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        return '', 204 
+        return '', 204  # Prevent form resubmission on refresh
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
