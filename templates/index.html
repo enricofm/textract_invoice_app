@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice OCR Extractor</title>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0a0a0a;
+            color: #e4e4e4;
+            min-height: 100vh;
+            padding: 40px 20px;
+            margin: 0;
+        }
+
+        .container {
+            background: #141414;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            max-width: 920px;
+            width: 100%;
+            padding: 48px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #fafafa;
+            margin-bottom: 8px;
+            font-size: 2rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            color: #888;
+            margin-bottom: 40px;
+            font-size: 0.95rem;
+            font-weight: 400;
+        }
+
+        .upload-area {
+            border: 2px dashed #333;
+            border-radius: 8px;
+            padding: 48px 32px;
+            text-align: center;
+            background: #1a1a1a;
+            transition: all 0.2s;
+            cursor: pointer;
+            margin-bottom: 24px;
+        }
+
+        .upload-area:hover {
+            border-color: #444;
+            background: #1e1e1e;
+        }
+
+        .upload-area.dragover {
+            border-color: #555;
+            background: #222;
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+            opacity: 0.6;
+        }
+
+        .upload-text {
+            color: #e4e4e4;
+            font-size: 1rem;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+
+        .upload-hint {
+            color: #666;
+            font-size: 0.875rem;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .config-section {
+            background: #111111;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .config-title {
+            font-weight: 600;
+            color: #0070f3;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            color: #e5e5e5;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #1f1f1f;
+            border-radius: 8px;
+            font-size: 1em;
+            background: #0f0f0f;
+            color: #f5f5f5;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #0070f3;
+            box-shadow: 0 6px 18px rgba(0, 118, 255, 0.06);
+        }
+
+        .btn {
+            background: #fafafa;
+            color: #0a0a0a;
+            border: none;
+            padding: 14px 24px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.15s;
+        }
+
+        .btn:hover {
+            background: #fff;
+        }
+
+        .btn:disabled {
+            background: #2a2a2a;
+            color: #666;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .spinner {
+            border: 3px solid #2a2a2a;
+            border-top: 3px solid #fafafa;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .results {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .results-title {
+            font-size: 1.25rem;
+            color: #fafafa;
+            margin-bottom: 24px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #2a2a2a;
+            font-weight: 600;
+        }
+
+        .field-group {
+            background: #1a1a1a;
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            border: 1px solid #2a2a2a;
+        }
+
+        .field-label {
+            font-weight: 500;
+            color: #aaa;
+            margin-bottom: 6px;
+            font-size: 0.875rem;
+        }
+
+        .field-value {
+            color: #e4e4e4;
+            font-size: 1rem;
+        }
+
+        .confidence {
+            color: #666;
+            font-size: 0.8rem;
+            margin-left: 8px;
+        }
+
+        .line-items {
+            margin-top: 20px;
+        }
+
+        .line-item {
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+
+        .download-btn {
+            background: #2a2a2a;
+            margin-top: 24px;
+            color: #e4e4e4;
+            border: 1px solid #333;
+        }
+
+        .download-btn:hover {
+            background: #333;
+        }
+
+        .error {
+            background: #1a1414;
+            color: #ff8a8a;
+            padding: 14px;
+            border-radius: 6px;
+            margin-top: 16px;
+            border: 1px solid #3a2a2a;
+            font-size: 0.9rem;
+        }
+
+        .success {
+            background: #14181a;
+            color: #8aff8a;
+            padding: 14px;
+            border-radius: 6px;
+            margin-top: 16px;
+            border: 1px solid #2a3a2a;
+            font-size: 0.9rem;
+        }
+
+        .selected-file {
+            background: #1a1a1a;
+            padding: 14px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+            border: 1px solid #2a2a2a;
+        }
+
+        .selected-file-name {
+            color: #e4e4e4;
+            font-weight: 500;
+            font-size: 0.95rem;
+        }
+
+        .tables-section {
+            margin-top: 30px;
+        }
+
+        .table-container {
+            margin-bottom: 30px;
+            overflow-x: auto;
+        }
+
+        .extracted-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1a1a1a;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #2a2a2a;
+        }
+
+        .extracted-table th {
+            background: #1e1e1e;
+            color: #aaa;
+            padding: 12px 16px;
+            text-align: left;
+            font-weight: 500;
+            font-size: 0.875rem;
+            border-bottom: 1px solid #2a2a2a;
+        }
+
+        .extracted-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid #2a2a2a;
+            color: #e4e4e4;
+            font-size: 0.9rem;
+        }
+
+        .extracted-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .extracted-table tbody tr:hover {
+            background: #1e1e1e;
+        }
+
+        .table-title {
+            font-weight: 500;
+            color: #aaa;
+            margin-bottom: 12px;
+            font-size: 0.95rem;
+        }
+    </style>
+
+</head>
+
+<body>
+    <div class="container">
+        <h1 style="display: flex; align-items: center; gap: 12px;">
+            <i data-lucide="file-text" style="width: 32px; height: 32px;"></i>
+            Extrator de Faturas OCR
+        </h1>
+        <p class="subtitle">Faça upload do PDF da sua fatura para extrair dados usando AWS Textract</p>
+        <div style="margin: 20px 0;">
+            <a href="/graficos" style="color: #0070f3; text-decoration: none; padding: 10px 20px; border: 1px solid #2a2a2a; border-radius: 6px; display: inline-flex; align-items: center; gap: 8px; transition: all 0.2s;">
+                <i data-lucide="bar-chart-3" style="width: 18px; height: 18px;"></i>
+                Ver Gráficos e Análises
+            </a>
+        </div>
+
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">
+                <i data-lucide="folder-open" style="width: 48px; height: 48px; opacity: 0.6;"></i>
+            </div>
+            <div class="upload-text">Clique para fazer upload ou arraste e solte</div>
+            <div class="upload-hint">Apenas arquivos PDF (máx 16MB)</div>
+            <input type="file" id="fileInput" accept=".pdf">
+        </div>
+
+        <div class="selected-file" id="selectedFile">
+            <div class="selected-file-name" id="fileName"></div>
+        </div>
+
+        <button class="btn" id="uploadBtn" disabled>Processar Fatura</button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processando sua fatura... Isso pode levar alguns instantes.</p>
+        </div>
+
+        <div id="message"></div>
+
+        <div class="results" id="results">
+            <h2 class="results-title">Dados Extraídos</h2>
+            <div id="summaryFields"></div>
+            <div class="line-items" id="lineItems"></div>
+            <div class="tables-section" id="tablesSection"></div>
+            <button class="btn download-btn" id="downloadBtn">Baixar JSON</button>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const loading = document.getElementById('loading');
+        const message = document.getElementById('message');
+        const results = document.getElementById('results');
+        const selectedFile = document.getElementById('selectedFile');
+        const fileName = document.getElementById('fileName');
+        let selectedPdfFile = null;
+        let outputFilename = null;
+
+        // Click to upload
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // File selection
+        fileInput.addEventListener('change', (e) => {
+            handleFile(e.target.files[0]);
+        });
+
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFile(e.dataTransfer.files[0]);
+        });
+
+        function handleFile(file) {
+            if (!file) return;
+
+            if (file.type !== 'application/pdf') {
+                showMessage('Por favor, selecione um arquivo PDF', 'error');
+                return;
+            }
+
+            if (file.size > 16 * 1024 * 1024) {
+                showMessage('O tamanho do arquivo deve ser menor que 16MB', 'error');
+                return;
+            }
+
+            selectedPdfFile = file;
+            fileName.textContent = `Selected: ${file.name}`;
+            selectedFile.style.display = 'block';
+            uploadBtn.disabled = false;
+            message.innerHTML = '';
+            results.style.display = 'none';
+        }
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!selectedPdfFile) return;
+
+            const formData = new FormData();
+            formData.append('file', selectedPdfFile);
+            formData.append('aws_profile', 'default');
+            formData.append('aws_region', 'us-east-1');
+
+            uploadBtn.disabled = true;
+            loading.style.display = 'block';
+            message.innerHTML = '';
+            results.style.display = 'none';
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    displayResults(data.ocr_data);
+                    outputFilename = data.files.normalized_json;
+                } else {
+                    showMessage(data.error || 'Ocorreu um erro', 'error');
+                }
+            } catch (error) {
+                showMessage('Erro de rede: ' + error.message, 'error');
+            } finally {
+                loading.style.display = 'none';
+                uploadBtn.disabled = false;
+            }
+        });
+
+        function displayResults(data) {
+            const summaryFields = document.getElementById('summaryFields');
+            const lineItems = document.getElementById('lineItems');
+
+            if (data.summary_fields && data.summary_fields.length > 0) {
+                data.summary_fields.forEach(field => {
+                    const fieldDiv = document.createElement('div');
+                    fieldDiv.className = 'field-group';
+                    fieldDiv.innerHTML = `
+                        <div class="field-label">${field.label || 'Unknown'}</div>
+                        <div class="field-value">
+                            ${field.value || 'N/A'}
+                            <span class="confidence">(${Math.round(field.value_confidence || 0)}% confidence)</span>
+                        </div>
+                    `;
+                    summaryFields.appendChild(fieldDiv);
+                });
+            } else {
+                summaryFields.innerHTML += '<p>Nenhum campo resumido encontrado</p>';
+            }
+
+            lineItems.innerHTML = '<h3 style="margin-bottom: 15px; margin-top: 20px;">Itens de Linha</h3>';
+
+            if (data.line_items && data.line_items.length > 0) {
+                data.line_items.forEach((item, index) => {
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'line-item';
+                    let itemHtml = `<strong>Item ${index + 1}</strong><br>`;
+
+                    for (const [key, value] of Object.entries(item)) {
+                        itemHtml += `<div style="margin-top: 5px;"><strong>${key}:</strong> ${value}</div>`;
+                    }
+
+                    itemDiv.innerHTML = itemHtml;
+                    lineItems.appendChild(itemDiv);
+                });
+            } else {
+                lineItems.innerHTML += '<p>Nenhum item de linha encontrado</p>';
+            }
+
+            // Display tables
+            const tablesSection = document.getElementById('tablesSection');
+            tablesSection.innerHTML = '';
+
+            if (data.tables && data.tables.length > 0) {
+                tablesSection.innerHTML = '<h3 style="margin-bottom: 15px; margin-top: 20px;">Tabelas de Consumo</h3>';
+
+                data.tables.forEach((table, tableIndex) => {
+                    const tableContainer = document.createElement('div');
+                    tableContainer.className = 'table-container';
+
+                    const tableTitle = document.createElement('div');
+                    tableTitle.className = 'table-title';
+                    tableTitle.textContent = `Tabela ${tableIndex + 1}`;
+                    tableContainer.appendChild(tableTitle);
+
+                    const tableElement = document.createElement('table');
+                    tableElement.className = 'extracted-table';
+
+                    // Create table header from first row
+                    if (table.length > 0) {
+                        const thead = document.createElement('thead');
+                        const headerRow = document.createElement('tr');
+
+                        table[0].forEach(cell => {
+                            const th = document.createElement('th');
+                            th.textContent = cell || '';
+                            headerRow.appendChild(th);
+                        });
+
+                        thead.appendChild(headerRow);
+                        tableElement.appendChild(thead);
+
+                        // Create table body with remaining rows
+                        if (table.length > 1) {
+                            const tbody = document.createElement('tbody');
+
+                            for (let i = 1; i < table.length; i++) {
+                                const row = document.createElement('tr');
+
+                                table[i].forEach(cell => {
+                                    const td = document.createElement('td');
+                                    td.textContent = cell || '';
+                                    row.appendChild(td);
+                                });
+
+                                tbody.appendChild(row);
+                            }
+
+                            tableElement.appendChild(tbody);
+                        }
+                    }
+
+                    tableContainer.appendChild(tableElement);
+                    tablesSection.appendChild(tableContainer);
+                });
+            }
+
+            results.style.display = 'block';
+        }
+
+        document.getElementById('downloadBtn').addEventListener('click', () => {
+            if (outputFilename) {
+                window.location.href = `/download/${outputFilename}`;
+            }
+        });
+
+        function showMessage(text, type) {
+            message.className = type;
+            message.textContent = text;
+        }
+
+        lucide.createIcons();
+    </script>
+</body>
+
+</html>
