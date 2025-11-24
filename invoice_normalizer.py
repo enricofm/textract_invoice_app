@@ -30,7 +30,7 @@ class InvoiceNormalizer:
         'demanda_registrada': ['DEMANDA REGISTRADA', 'DEM. REGISTRADA', 'DEMANDA MEDIDA'],
         'bandeira': ['BANDEIRA', 'BAND.'],
         'icms': ['ICMS'],
-        'pis': ['PIS'],
+        'pis': ['PIS', 'PASEP'],
         'cofins': ['COFINS'],
         'energia': ['ENERGIA', 'CONSUMO DE ENERGIA', 'ENERGIA ELÉTRICA'],
         'tusd': ['TUSD', 'TUST'],
@@ -119,7 +119,7 @@ class InvoiceNormalizer:
         }
         
         # Extract dates
-        data_inicio, data_fim = self._extract_periodo_leitura(field_map)
+        data_inicio, data_fim = self._extract_periodo_leitura(field_map, tables)
         result['data_inicio'] = data_inicio
         result['data_fim'] = data_fim
         
@@ -189,13 +189,35 @@ class InvoiceNormalizer:
         return field_map
 
     def _find_field(self, field_map: Dict, keywords: List[str]) -> Optional[Tuple[str, float]]:
-        """Find a field by matching keywords"""
+        """Find a field by matching keywords (partial match, prioritizing exact matches)"""
+        # First pass: try exact matches
         for label, data in field_map.items():
+            label_normalized = label.upper()
+            
             for keyword in keywords:
-                if keyword.upper() in label.upper():
+                keyword_normalized = keyword.upper()
+                # Check for exact match
+                if label_normalized == keyword_normalized:
+                    original_label = data.get('original_label', label)
                     self.raw_snippets.append({
                         'campo': keywords[0],
-                        'trecho': f"{label}: {data['value']}",
+                        'trecho': f"{original_label}: {data['value']}",
+                        'confidence_ocr': data['value_confidence']
+                    })
+                    return data['value'], data['value_confidence']
+        
+        # Second pass: try partial matches (keyword in label)
+        for label, data in field_map.items():
+            label_normalized = label.upper()
+            
+            for keyword in keywords:
+                keyword_normalized = keyword.upper()
+                # Check if keyword is in label (partial match)
+                if keyword_normalized in label_normalized:
+                    original_label = data.get('original_label', label)
+                    self.raw_snippets.append({
+                        'campo': keywords[0],
+                        'trecho': f"{original_label}: {data['value']}",
                         'confidence_ocr': data['value_confidence']
                     })
                     return data['value'], data['value_confidence']
@@ -229,8 +251,10 @@ class InvoiceNormalizer:
             return self._normalize_date(value)
         return None
 
-    def _extract_periodo_leitura(self, field_map: Dict) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_periodo_leitura(self, field_map: Dict, tables: List = None) -> Tuple[Optional[str], Optional[str]]:
         """Extract reading period (start and end dates)"""
+        if tables is None:
+            tables = []
         data_inicio = None
         data_fim = None
         
@@ -243,6 +267,82 @@ class InvoiceNormalizer:
         value_atu, _ = self._find_field(field_map, self.KEYWORDS['leitura_atual'])
         if value_atu:
             data_fim = self._normalize_date(value_atu)
+        
+        if not data_inicio or not data_fim:
+            for label, data in field_map.items():
+                if 'DATAS DE LEITURA' in label.upper() or 'DATAS DE' in label.upper():
+                    value = data['value']
+                    anterior_match = re.search(r'Anterior[:\s]+(\d{2}/\d{2}(?:/\d{4})?)', value, re.IGNORECASE)
+                    atual_match = re.search(r'Atual[:\s]+(\d{2}/\d{2}(?:/\d{4})?)', value, re.IGNORECASE)
+                    
+                    if not anterior_match or not atual_match:
+                        # Look for dates after the keywords line
+                        lines = value.split('\n')
+                        if len(lines) >= 2:
+                            # Check if first line has keywords
+                            if 'ANTERIOR' in lines[0].upper() and 'ATUAL' in lines[0].upper():
+                                # Extract dates from second line
+                                dates = re.findall(r'\d{2}/\d{2}(?:/\d{4})?', lines[1])
+                                if len(dates) >= 2:
+                                    if not anterior_match:
+                                        anterior_match = type('obj', (object,), {'group': lambda self, n: dates[0]})()
+                                    if not atual_match:
+                                        atual_match = type('obj', (object,), {'group': lambda self, n: dates[1]})()
+
+                    
+                    if anterior_match and not data_inicio:
+                        date_str = anterior_match.group(1)
+                        # Add year if missing (assume current year from reference month)
+                        if len(date_str) <= 5:  # DD/MM format
+                            # Try to get year from "Referente a" field
+                            year = self._extract_year_from_reference(field_map)
+                            if year:
+                                date_str = f"{date_str}/{year}"
+                        data_inicio = self._normalize_date(date_str)
+                    
+                    if atual_match and not data_fim:
+                        date_str = atual_match.group(1)
+                        # Add year if missing
+                        if len(date_str) <= 5:  # DD/MM format
+                            year = self._extract_year_from_reference(field_map)
+                            if year:
+                                date_str = f"{date_str}/{year}"
+                        data_fim = self._normalize_date(date_str)
+                    
+                    break
+        
+        # If still not found, search in tables
+        if (not data_inicio or not data_fim) and tables:
+            for table in tables:
+                if len(table) < 2:
+                    continue
+                
+                # Check if table has reading dates (format: [['Leitura Anterior', '31/10/2024'], ...])
+                for row in table:
+                    if len(row) >= 2:
+                        label = str(row[0]).upper()
+                        value = str(row[1]) if len(row) > 1 else ''
+                        
+                        if 'LEITURA ANTERIOR' in label and not data_inicio:
+                            data_inicio = self._normalize_date(value)
+                            if data_inicio:
+                                self.raw_snippets.append({
+                                    'campo': 'data_inicio_tabela',
+                                    'trecho': f"{row[0]}: {value}",
+                                    'confidence_ocr': 0
+                                })
+                        
+                        if 'LEITURA ATUAL' in label and not data_fim:
+                            data_fim = self._normalize_date(value)
+                            if data_fim:
+                                self.raw_snippets.append({
+                                    'campo': 'data_fim_tabela',
+                                    'trecho': f"{row[0]}: {value}",
+                                    'confidence_ocr': 0
+                                })
+                
+                if data_inicio and data_fim:
+                    break
         
         if not data_inicio:
             self.warnings.append("Data de início do período não encontrada")
@@ -338,6 +438,72 @@ class InvoiceNormalizer:
                                         })
                                 except Exception:
                                     continue
+                
+                elif consumo_kwh is None and len(table) > 1:
+                    if any('DESCRI' in str(col).upper() for col in table[0]) and any('QUANTIDADE' in str(col).upper() or 'QUANT' in str(col).upper() for col in table[0]):
+                        # Find column indices
+                        desc_idx = None
+                        unid_idx = None
+                        quant_idx = None
+                        quant_faturada_idx = None
+                        
+                        for idx, col in enumerate(table[0]):
+                            col_upper = str(col).upper()
+                            if 'DESCRI' in col_upper:
+                                desc_idx = idx
+                            elif 'UNID' in col_upper and 'MED' in col_upper:
+                                unid_idx = idx
+                            elif 'QUANT' in col_upper:
+                                if 'FATURADA' in col_upper:
+                                    quant_faturada_idx = idx
+                                elif quant_idx is None:
+                                    quant_idx = idx
+                        
+                        # Prefer "Quant. Faturada" over "Quant. Registrada"
+                        if quant_faturada_idx is not None:
+                            quant_idx = quant_faturada_idx
+                        
+                        if desc_idx is not None and quant_idx is not None:
+                            for row in table[1:]:
+                                if len(row) > max(desc_idx, quant_idx):
+                                    desc = str(row[desc_idx]).upper()
+                                    unid = str(row[unid_idx]).upper() if unid_idx and len(row) > unid_idx else ''
+                                    
+                                    # Check for energy consumption patterns
+                                    is_energy_consumption = (
+                                        ('TUSD' in desc or 'TUS' in desc) and 'ENERGIA' in desc and 'KWH' in unid
+                                    ) or (
+                                        'ENERGIA ACL' in desc  # ENERGIA ACL is always energy consumption
+                                    )
+                                    
+                                    # Skip if it's a discount/credit line
+                                    is_discount = any(x in desc for x in ['DESC', 'DESCONTO', 'CREDITO', 'CREDIT'])
+                                    
+                                    if is_energy_consumption and not is_discount:
+                                        try:
+                                            quantidade = self._parse_number(row[quant_idx])
+                                            if quantidade and quantidade > 0:
+                                                is_ponta = 'PONTA' in desc and not any(x in desc for x in ['FORA', 'FPONTA', 'F PONTA'])
+                                                is_fora_ponta = any(x in desc for x in ['FORA PONTA', 'FPONTA', 'F PONTA', 'F.PONTA', 'FORA DE PONTA'])
+                                                
+                                                if is_ponta:
+                                                    consumo_ponta += quantidade
+                                                elif is_fora_ponta:
+                                                    consumo_fora_ponta += quantidade
+                                                else:
+                                                    # If not specified as ponta or fora ponta, use as total directly
+                                                    if consumo_kwh is None:
+                                                        consumo_kwh = quantidade
+                                                    else:
+                                                        consumo_kwh += quantidade
+                                                
+                                                self.raw_snippets.append({
+                                                    'campo': 'consumo_tusd',
+                                                    'trecho': f"{row[desc_idx]}: {quantidade} kWh",
+                                                    'confidence_ocr': 0
+                                                })
+                                        except Exception:
+                                            continue
         
         # Calculate total consumption from ponta + fora ponta
         if consumo_ponta > 0 or consumo_fora_ponta > 0:
@@ -448,6 +614,119 @@ class InvoiceNormalizer:
         
         # Search in tables for component details
         for table in tables:
+            # Check if this table has tax columns
+            if len(table) > 1:
+                # Check if first row is empty (header might be in row 1)
+                first_row_empty = all(not str(cell).strip() for cell in table[0])
+                header_row_idx = 1 if first_row_empty and len(table) > 2 else 0
+                header_row = [str(col).upper() for col in table[header_row_idx]]
+                
+                # Look for tables with ICMS and PIS/COFINS columns (EDP format)
+                icms_col_idx = None
+                pis_cofins_col_idx = None
+                
+                # Look for separate ICMS, PIS, COFINS columns (CPFL format)
+                icms_sep_idx = None
+                pis_sep_idx = None
+                cofins_sep_idx = None
+                
+                for idx, col in enumerate(header_row):
+                    col_upper = str(col).upper()
+                    
+                    # EDP format: combined PIS/COFINS column
+                    if ('PIS/COFINS' in col_upper or 'PIS / COFINS' in col_upper) and pis_cofins_col_idx is None:
+                        pis_cofins_col_idx = idx
+                    
+                    # EDP format: ICMS with currency indicator
+                    if 'ICMS' in col_upper and '(' in col_upper and 'R$' in col_upper and icms_col_idx is None:
+                        icms_col_idx = idx
+                    
+                    # Generic format: separate tax columns (CPFL, CEMIG, etc)
+                    # ICMS column (not base calculation, not aliquot, not percentage)
+                    if 'ICMS' in col_upper and icms_sep_idx is None:
+                        if 'BASE' not in col_upper and 'ALIQ' not in col_upper and 'CALC' not in col_upper:
+                            # Prefer columns with currency indicators or just "ICMS"
+                            if col_upper.strip() == 'ICMS' or 'R$' in col_upper or '(R$)' in col_upper:
+                                icms_sep_idx = idx
+                    
+                    # PIS column (with percentage or currency indicator)
+                    if 'PIS' in col_upper and pis_sep_idx is None:
+                        if '%' in col_upper or 'R$' in col_upper or col_upper.strip() == 'PIS':
+                            if 'BASE' not in col_upper and 'CALC' not in col_upper:
+                                pis_sep_idx = idx
+                    
+                    # COFINS column (with percentage or currency indicator)
+                    if 'COFINS' in col_upper and cofins_sep_idx is None:
+                        if '%' in col_upper or 'R$' in col_upper or col_upper.strip() == 'COFINS':
+                            if 'BASE' not in col_upper and 'CALC' not in col_upper:
+                                cofins_sep_idx = idx
+                
+                # If we found tax columns, look for TOTAL/CONSOLIDADO row
+                if (icms_col_idx is not None or pis_cofins_col_idx is not None or 
+                    icms_sep_idx is not None or pis_sep_idx is not None or cofins_sep_idx is not None):
+                    
+                    # Collect all total rows with their values
+                    total_rows = []
+                    for row in table[header_row_idx + 1:]:
+                        # Check if any column in the row contains "TOTAL" or "CONSOLIDADO"
+                        row_text = ' '.join([str(cell).upper() for cell in row])
+                        # Look for total/summary rows
+                        is_total_row = any(keyword in row_text for keyword in ['TOTAL', 'CONSOLIDADO', 'SOMA'])
+                        
+                        if is_total_row:
+                            # Check if this row has tax values
+                            has_values = False
+                            test_indices = [icms_col_idx, icms_sep_idx, pis_cofins_col_idx, pis_sep_idx, cofins_sep_idx]
+                            for idx in test_indices:
+                                if idx is not None and len(row) > idx:
+                                    val = self._parse_currency(row[idx])
+                                    if val and val > 0:
+                                        has_values = True
+                                        break
+                            
+                            if has_values:
+                                # Prioritize "CONSOLIDADO" over other totals
+                                priority = 2 if 'CONSOLIDADO' in row_text else 1
+                                total_rows.append((priority, row))
+                    
+                    # Sort by priority (CONSOLIDADO first) and use the best row
+                    if total_rows:
+                        total_rows.sort(key=lambda x: x[0], reverse=True)
+                        row = total_rows[0][1]
+                        
+                        # EDP format: Extract ICMS from TOTAL row
+                        if icms_col_idx is not None and len(row) > icms_col_idx and not componentes['icms']:
+                            icms_val = self._parse_currency(row[icms_col_idx])
+                            if icms_val and icms_val > 0:
+                                componentes['icms'] = icms_val
+                        
+                        # EDP format: Extract PIS/COFINS combined from TOTAL row
+                        if pis_cofins_col_idx is not None and len(row) > pis_cofins_col_idx:
+                            pis_cofins_val = self._parse_currency(row[pis_cofins_col_idx])
+                            if pis_cofins_val and pis_cofins_val > 0:
+                                # Split PIS/COFINS (typically 0.65% PIS + 3% COFINS = ~16.7% of total)
+                                # Approximate: PIS ≈ 17.8% of total, COFINS ≈ 82.2% of total
+                                if not componentes['pis'] and not componentes['cofins']:
+                                    componentes['pis'] = round(pis_cofins_val * 0.178, 2)
+                                    componentes['cofins'] = round(pis_cofins_val * 0.822, 2)
+                        
+                        # Generic format: Extract separate ICMS, PIS, COFINS from TOTAL row
+                        if icms_sep_idx is not None and len(row) > icms_sep_idx and not componentes['icms']:
+                            icms_val = self._parse_currency(row[icms_sep_idx])
+                            if icms_val and icms_val > 0:
+                                componentes['icms'] = icms_val
+                        
+                        if pis_sep_idx is not None and len(row) > pis_sep_idx and not componentes['pis']:
+                            pis_val = self._parse_currency(row[pis_sep_idx])
+                            if pis_val and pis_val > 0:
+                                componentes['pis'] = pis_val
+                        
+                        if cofins_sep_idx is not None and len(row) > cofins_sep_idx and not componentes['cofins']:
+                            cofins_val = self._parse_currency(row[cofins_sep_idx])
+                            if cofins_val and cofins_val > 0:
+                                componentes['cofins'] = cofins_val
+            
+            # Standard row-by-row search
             for row in table:
                 if len(row) >= 2:
                     desc = row[0].upper()
@@ -467,7 +746,7 @@ class InvoiceNormalizer:
                                 break
                     elif 'ICMS' in desc and not componentes['icms']:
                         componentes['icms'] = self._parse_currency(valor_text)
-                    elif 'PIS' in desc and not componentes['pis']:
+                    elif ('PIS' in desc or 'PASEP' in desc) and not componentes['pis']:
                         componentes['pis'] = self._parse_currency(valor_text)
                     elif 'COFINS' in desc and not componentes['cofins']:
                         componentes['cofins'] = self._parse_currency(valor_text)
@@ -481,6 +760,17 @@ class InvoiceNormalizer:
                             })
         
         return componentes
+
+    def _extract_year_from_reference(self, field_map: Dict) -> Optional[str]:
+        """Extract year from 'Referente a' field (e.g., 'NOV/2024' -> '2024')"""
+        for label, data in field_map.items():
+            if 'REFERENTE' in label.upper():
+                value = data['value']
+                # Pattern: NOV/2024, 11/2024, etc.
+                year_match = re.search(r'/(\d{4})', value)
+                if year_match:
+                    return year_match.group(1)
+        return None
 
     def _normalize_date(self, date_str: str) -> Optional[str]:
         """Normalize date to YYYY-MM-DD format"""

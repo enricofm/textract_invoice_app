@@ -22,7 +22,6 @@ def print_labels_and_values(field):
             str(field.get("ValueDetection")["Confidence"])) + ", "
               + "Summary Values: {}".format(str(field.get("ValueDetection")["Text"])))
         print(field.get("ValueDetection")["Geometry"])
-    return
 
 def process_expense_analysis(client, document_path):
     """
@@ -280,8 +279,8 @@ def extract_complete_invoice_data(client, document_path):
             print(f"Error reading file: {e}")
             raise
     
-    def convert_to_image(path):
-        """Convert PDF to image bytes"""
+    def convert_to_image(path, page_num=1):
+        """Convert PDF page to image bytes"""
         import os
         from pdf2image import convert_from_path
         import io
@@ -302,12 +301,12 @@ def extract_complete_invoice_data(client, document_path):
                 break
         
         if poppler_path:
-            images = convert_from_path(path, first_page=1, last_page=1, dpi=300, poppler_path=poppler_path)
+            images = convert_from_path(path, first_page=page_num, last_page=page_num, dpi=300, poppler_path=poppler_path)
         else:
-            images = convert_from_path(path, first_page=1, last_page=1, dpi=300)
+            images = convert_from_path(path, first_page=page_num, last_page=page_num, dpi=300)
         
         if not images:
-            raise Exception("Failed to convert PDF to image")
+            raise Exception(f"Failed to convert PDF page {page_num} to image")
         
         img_byte_arr = io.BytesIO()
         images[0].save(img_byte_arr, format='PNG')
@@ -325,8 +324,9 @@ def extract_complete_invoice_data(client, document_path):
         'raw_text': ''
     }
     
-    # Try to extract expense data
+    # Try to extract expense data (analyze_expense processes all pages automatically)
     try:
+        print(f"Processing document with analyze_expense...")
         expense_response = client.analyze_expense(Document={'Bytes': document_bytes})
         
         for expense_doc in expense_response["ExpenseDocuments"]:
@@ -361,33 +361,92 @@ def extract_complete_invoice_data(client, document_path):
     
     except Exception as e:
         if 'UnsupportedDocumentException' in str(e):
-            print(f"Converting to image for expense analysis: {e}")
-            document_bytes = convert_to_image(document_path)
+            print(f"PDF not supported directly, converting pages to images: {e}")
+            # Get number of pages
+            from pdf2image import pdfinfo_from_path
+            import os
+            
+            poppler_paths = [
+                r"C:\Program Files\poppler-25.07.0\Library\bin",
+                r"C:\Program Files\poppler\Library\bin",
+                r"C:\Program Files (x86)\poppler\Library\bin",
+                r"C:\poppler\poppler-24.08.0\Library\bin",
+                r"C:\poppler\Library\bin",
+                r"C:\ProgramData\chocolatey\lib\poppler\tools\Library\bin",
+            ]
+            
+            poppler_path = None
+            for p in poppler_paths:
+                if os.path.exists(p):
+                    poppler_path = p
+                    break
             
             try:
-                expense_response = client.analyze_expense(Document={'Bytes': document_bytes})
-                # Process expense response (same as above)
-                for expense_doc in expense_response["ExpenseDocuments"]:
-                    for summary_field in expense_doc["SummaryFields"]:
-                        field_data = {}
-                        if "LabelDetection" in summary_field:
-                            field_data['label'] = summary_field["LabelDetection"].get("Text", "")
-                            field_data['label_confidence'] = summary_field["LabelDetection"].get("Confidence", 0)
-                        if "ValueDetection" in summary_field:
-                            field_data['value'] = summary_field["ValueDetection"].get("Text", "")
-                            field_data['value_confidence'] = summary_field["ValueDetection"].get("Confidence", 0)
-                        if field_data:
-                            result['summary_fields'].append(field_data)
-            except Exception as exp_error:
-                print(f"Expense analysis failed: {exp_error}")
+                if poppler_path:
+                    pdf_info = pdfinfo_from_path(document_path, poppler_path=poppler_path)
+                else:
+                    pdf_info = pdfinfo_from_path(document_path)
+                num_pages = pdf_info.get('Pages', 1)
+            except:
+                num_pages = 1
+            
+            print(f"Processing {num_pages} page(s)...")
+            
+            # Process each page
+            for page_num in range(1, num_pages + 1):
+                try:
+                    print(f"Processing page {page_num}/{num_pages}...")
+                    page_bytes = convert_to_image(document_path, page_num)
+                    
+                    # Analyze expense for this page
+                    page_expense_response = client.analyze_expense(Document={'Bytes': page_bytes})
+                    
+                    for expense_doc in page_expense_response["ExpenseDocuments"]:
+                        for summary_field in expense_doc["SummaryFields"]:
+                            field_data = {}
+                            if "LabelDetection" in summary_field:
+                                field_data['label'] = summary_field["LabelDetection"].get("Text", "")
+                                field_data['label_confidence'] = summary_field["LabelDetection"].get("Confidence", 0)
+                            if "ValueDetection" in summary_field:
+                                field_data['value'] = summary_field["ValueDetection"].get("Text", "")
+                                field_data['value_confidence'] = summary_field["ValueDetection"].get("Confidence", 0)
+                            if field_data:
+                                result['summary_fields'].append(field_data)
+                        
+                        # Extract line items from this page
+                        for line_item_group in expense_doc["LineItemGroups"]:
+                            for line_item in line_item_group["LineItems"]:
+                                item_data = {}
+                                for expense_field in line_item["LineItemExpenseFields"]:
+                                    if "LabelDetection" in expense_field:
+                                        label = expense_field["LabelDetection"].get("Text", "")
+                                    else:
+                                        label = "unknown"
+                                    
+                                    if "ValueDetection" in expense_field:
+                                        value = expense_field["ValueDetection"].get("Text", "")
+                                        item_data[label] = value
+                                
+                                if item_data:
+                                    result['line_items'].append(item_data)
+                    
+                    # Extract tables from this page
+                    page_tables = extract_tables_from_document(client, page_bytes)
+                    result['tables'].extend(page_tables)
+                    
+                except Exception as page_error:
+                    print(f"Error processing page {page_num}: {page_error}")
+                    continue
         else:
             print(f"Expense analysis error: {e}")
     
-    # Extract tables
-    try:
-        tables = extract_tables_from_document(client, document_bytes)
-        result['tables'] = tables
-    except Exception as e:
-        print(f"Table extraction error: {e}")
+    # Extract tables (only if not already extracted page-by-page)
+    if not result['tables']:
+        try:
+            print(f"Extracting tables from document...")
+            tables = extract_tables_from_document(client, document_bytes)
+            result['tables'] = tables
+        except Exception as e:
+            print(f"Table extraction error: {e}")
     
     return result
