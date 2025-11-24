@@ -388,6 +388,7 @@
         const fileName = document.getElementById('fileName');
         let selectedPdfFile = null;
         let outputFilename = null;
+        let displayedOcrData = null;
 
         // Click to upload
         uploadArea.addEventListener('click', () => {
@@ -459,7 +460,8 @@
 
                 if (response.ok && data.success) {
                     displayResults(data.ocr_data);
-                    outputFilename = data.files.normalized_json;
+                    displayedOcrData = data.ocr_data;
+                    outputFilename = data.files.ocr_json;
                 } else {
                     showMessage(data.error || 'Ocorreu um erro', 'error');
                 }

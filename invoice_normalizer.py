@@ -359,151 +359,34 @@ class InvoiceNormalizer:
         consumo_ponta = 0
         consumo_fora_ponta = 0
         
-        # Try to find readings in summary fields
-        # Note: In the sample JSON, "Leitura Anterior" and "Leitura Atual" contain dates, not values
-        # We need to look in tables or line items for actual meter readings
+        # Define generic patterns for energy consumption detection
+        ENERGY_KEYWORDS = ['CONSUMO', 'ENERGIA', 'COMPONENTE', 'TUSD', 'TUST', 'ENCARGO', 'ACL']
+        PONTA_KEYWORDS = ['PONTA', ' HP', 'HP ', 'HORÁRIO PONTA', 'HORARIO PONTA']
+        FORA_PONTA_KEYWORDS = ['FORA PONTA', 'FPONTA', 'F PONTA', 'F.PONTA', 'HFP', 'FORA DE PONTA']
+        EXCLUDE_KEYWORDS = ['DESC', 'DESCONTO', 'CREDITO', 'CREDIT', 'AJUSTE', 'DEMANDA', 'REATIVA']
         
-        # Search in tables for meter reading data
+        # Search in tables for consumption data
         for table in tables:
             # Check if this is a meter reading table
             if len(table) > 0:
                 header_row = ' '.join(table[0]).upper()
                 
-                # Look for meter reading table (Medidor, Grandezas, Leitura Anterior, Leitura Atual, Consumo)
-                if 'MEDIDOR' in header_row and 'LEITURA ANTERIOR' in header_row and 'LEITURA ATUAL' in header_row:
-                    # Find the column index for "Consumo kWh"
-                    consumo_col_idx = None
-                    for idx, col in enumerate(table[0]):
-                        if 'CONSUMO' in str(col).upper() and ('KWH' in str(col).upper() or 'KW' in str(col).upper()):
-                            consumo_col_idx = idx
-                            break
+                # Try to extract consumption using generic table analysis
+                if consumo_kwh is None and len(table) > 1:
+                    result = self._extract_from_generic_table(
+                        table, ENERGY_KEYWORDS, PONTA_KEYWORDS, 
+                        FORA_PONTA_KEYWORDS, EXCLUDE_KEYWORDS
+                    )
                     
-                    for i, row in enumerate(table[1:], 1):
-                        if len(row) > consumo_col_idx if consumo_col_idx else len(row) >= 7:
-                            try:
-                                # Extract readings
-                                leit_ant = self._parse_number(row[3]) if len(row) > 3 else None
-                                leit_atu = self._parse_number(row[4]) if len(row) > 4 else None
-                                
-                                # Use the consumo column if found, otherwise column 6
-                                consumo = None
-                                if consumo_col_idx is not None and len(row) > consumo_col_idx:
-                                    consumo = self._parse_number(row[consumo_col_idx])
-                                elif len(row) > 6:
-                                    consumo = self._parse_number(row[6])
-                                
-                                if consumo:
-                                    # Sum all consumo values from this table
-                                    consumo_kwh = (consumo_kwh or 0) + consumo
-                                    
-                                    self.raw_snippets.append({
-                                        'campo': 'consumo_medidor',
-                                        'trecho': f"{row[1] if len(row) > 1 else 'Medidor'}: {consumo} kWh",
-                                        'confidence_ocr': 0
-                                    })
-                                
-                                # Store first valid readings
-                                if leit_ant is not None and leitura_anterior is None:
-                                    leitura_anterior = leit_ant
-                                if leit_atu is not None and leitura_atual is None:
-                                    leitura_atual = leit_atu
-                                
-                            except Exception as e:
-                                continue
-                
-                # Look for consumption in "Itens da Fatura" table (only if not found in meter table)
-                elif 'ITENS' in header_row and 'FATURA' in header_row and consumo_kwh is None:
-                    for row in table[1:]:
-                        if len(row) >= 3:
-                            item_desc = str(row[0]).upper()
-                            # Look for CONSUMO ATIVO items with quantity in kWh
-                            if 'CONSUMO' in item_desc and 'KWH' in str(row[1]).upper():
-                                try:
-                                    # Quantity is usually in column 2
-                                    quantidade = self._parse_number(row[2]) if len(row) > 2 else None
-                                    if quantidade:
-                                        # Check for variations of PONTA and FORA PONTA
-                                        is_ponta = 'PONTA' in item_desc
-                                        is_fora_ponta = any(x in item_desc for x in ['FORA PONTA', 'FORA DE PONTA', 'FPONTA', 'F PONTA', 'F.PONTA'])
-                                        
-                                        if is_ponta and not is_fora_ponta:
-                                            consumo_ponta += quantidade
-                                        elif is_fora_ponta:
-                                            consumo_fora_ponta += quantidade
-                                        
-                                        self.raw_snippets.append({
-                                            'campo': 'consumo_item',
-                                            'trecho': f"{row[0]}: {quantidade} kWh",
-                                            'confidence_ocr': 0
-                                        })
-                                except Exception:
-                                    continue
-                
-                elif consumo_kwh is None and len(table) > 1:
-                    if any('DESCRI' in str(col).upper() for col in table[0]) and any('QUANTIDADE' in str(col).upper() or 'QUANT' in str(col).upper() for col in table[0]):
-                        # Find column indices
-                        desc_idx = None
-                        unid_idx = None
-                        quant_idx = None
-                        quant_faturada_idx = None
+                    if result:
+                        consumo_ponta += result.get('ponta', 0)
+                        consumo_fora_ponta += result.get('fora_ponta', 0)
+                        if result.get('total'):
+                            consumo_kwh = (consumo_kwh or 0) + result['total']
                         
-                        for idx, col in enumerate(table[0]):
-                            col_upper = str(col).upper()
-                            if 'DESCRI' in col_upper:
-                                desc_idx = idx
-                            elif 'UNID' in col_upper and 'MED' in col_upper:
-                                unid_idx = idx
-                            elif 'QUANT' in col_upper:
-                                if 'FATURADA' in col_upper:
-                                    quant_faturada_idx = idx
-                                elif quant_idx is None:
-                                    quant_idx = idx
-                        
-                        # Prefer "Quant. Faturada" over "Quant. Registrada"
-                        if quant_faturada_idx is not None:
-                            quant_idx = quant_faturada_idx
-                        
-                        if desc_idx is not None and quant_idx is not None:
-                            for row in table[1:]:
-                                if len(row) > max(desc_idx, quant_idx):
-                                    desc = str(row[desc_idx]).upper()
-                                    unid = str(row[unid_idx]).upper() if unid_idx and len(row) > unid_idx else ''
-                                    
-                                    # Check for energy consumption patterns
-                                    is_energy_consumption = (
-                                        ('TUSD' in desc or 'TUS' in desc) and 'ENERGIA' in desc and 'KWH' in unid
-                                    ) or (
-                                        'ENERGIA ACL' in desc  # ENERGIA ACL is always energy consumption
-                                    )
-                                    
-                                    # Skip if it's a discount/credit line
-                                    is_discount = any(x in desc for x in ['DESC', 'DESCONTO', 'CREDITO', 'CREDIT'])
-                                    
-                                    if is_energy_consumption and not is_discount:
-                                        try:
-                                            quantidade = self._parse_number(row[quant_idx])
-                                            if quantidade and quantidade > 0:
-                                                is_ponta = 'PONTA' in desc and not any(x in desc for x in ['FORA', 'FPONTA', 'F PONTA'])
-                                                is_fora_ponta = any(x in desc for x in ['FORA PONTA', 'FPONTA', 'F PONTA', 'F.PONTA', 'FORA DE PONTA'])
-                                                
-                                                if is_ponta:
-                                                    consumo_ponta += quantidade
-                                                elif is_fora_ponta:
-                                                    consumo_fora_ponta += quantidade
-                                                else:
-                                                    # If not specified as ponta or fora ponta, use as total directly
-                                                    if consumo_kwh is None:
-                                                        consumo_kwh = quantidade
-                                                    else:
-                                                        consumo_kwh += quantidade
-                                                
-                                                self.raw_snippets.append({
-                                                    'campo': 'consumo_tusd',
-                                                    'trecho': f"{row[desc_idx]}: {quantidade} kWh",
-                                                    'confidence_ocr': 0
-                                                })
-                                        except Exception:
-                                            continue
+                        # Add snippets
+                        for snippet in result.get('snippets', []):
+                            self.raw_snippets.append(snippet)
         
         # Calculate total consumption from ponta + fora ponta
         if consumo_ponta > 0 or consumo_fora_ponta > 0:
@@ -532,6 +415,140 @@ class InvoiceNormalizer:
             self.warnings.append("Consumo em kWh não encontrado")
         
         return leitura_anterior, leitura_atual, consumo_kwh
+
+    def _extract_from_generic_table(self, table: List, energy_keywords: List, 
+                                     ponta_keywords: List, fora_ponta_keywords: List,
+                                     exclude_keywords: List) -> Optional[Dict]:
+        """
+        Generic table parser that works for any invoice format.
+        Automatically detects columns and extracts energy consumption.
+        
+        Returns dict with: {'ponta': float, 'fora_ponta': float, 'total': float, 'snippets': list}
+        """
+        if len(table) < 2:
+            return None
+        
+        header = [str(col).upper() for col in table[0]]
+        
+        # Find relevant columns dynamically
+        desc_col = None  # Description/Product/Item column
+        unit_col = None  # Unit column (kWh)
+        value_cols = []  # Quantity/Registered/Billed columns
+        
+        for idx, col in enumerate(header):
+            col_clean = col.strip()
+            
+            # Description column (first priority)
+            if desc_col is None and any(kw in col_clean for kw in ['DESCRI', 'PRODUTO', 'ITEM', 'GRANDEZA']):
+                desc_col = idx
+            
+            # Unit column
+            if unit_col is None and any(kw in col_clean for kw in ['UNID', 'UN.', 'U.M.']):
+                unit_col = idx
+            
+            # Value columns (quantity, registered, billed, consumption)
+            if any(kw in col_clean for kw in ['QUANT', 'REGISTRADO', 'FATURADO', 'CONSUMO', 'MEDIDO']):
+                # Prefer "Consumo" > "Faturado" > "Registrado"
+                priority = 3 if 'CONSUMO' in col_clean else 2 if 'FATURADO' in col_clean else 1 if 'REGISTRADO' in col_clean else 0
+                value_cols.append((idx, priority, col_clean))
+        
+        # Sort value columns by priority and use the best one
+        if value_cols:
+            value_cols.sort(key=lambda x: x[1], reverse=True)
+            value_col = value_cols[0][0]
+        else:
+            return None
+        
+        # If no description column found by keywords, find it heuristically
+        if desc_col is None:
+            # Look for columns that likely contain descriptions (not numbers, not empty)
+            # Check first few rows to determine which column has text content
+            for idx in range(len(header)):
+                col_name = header[idx].strip()
+                # Skip columns that are clearly not descriptions
+                if any(kw in col_name for kw in ['MEDIDOR', 'N°', 'Nº', 'NUMERO', 'NÚMERO', 'LEITURA', 'CONST']):
+                    continue
+                # Check if this column has text content in rows
+                has_text = False
+                for row in table[1:3]:  # Check first 2 rows
+                    if len(row) > idx:
+                        cell = str(row[idx]).strip()
+                        # Check if cell contains text (not just numbers or empty)
+                        if cell and not cell.replace('.', '').replace(',', '').replace('-', '').isdigit():
+                            has_text = True
+                            break
+                if has_text:
+                    desc_col = idx
+                    break
+        
+        if desc_col is None:
+            return None
+        
+        # Extract consumption from rows
+        ponta = 0
+        fora_ponta = 0
+        total = 0
+        snippets = []
+        
+        for row in table[1:]:
+            if len(row) <= max(desc_col, value_col):
+                continue
+            
+            desc = str(row[desc_col]).upper()
+            unit = str(row[unit_col]).upper() if unit_col and len(row) > unit_col else ''
+            
+            # Skip if description is just a number (likely a meter number)
+            desc_clean = desc.strip().replace('.', '').replace(',', '').replace('-', '')
+            if desc_clean.isdigit():
+                continue
+            
+            # Check if this row should be excluded
+            if any(excl in desc for excl in exclude_keywords):
+                continue
+            
+            # Check if this is an energy consumption row
+            has_energy_keyword = any(kw in desc for kw in energy_keywords)
+            has_kwh_unit = 'KWH' in unit or 'KW' in unit
+            
+            if not (has_energy_keyword or has_kwh_unit):
+                continue
+            
+            # Extract value
+            try:
+                value = self._parse_number(row[value_col])
+                if not value or value <= 0:
+                    continue
+                
+                # Determine if it's ponta or fora ponta
+                is_fora_ponta = any(kw in desc for kw in fora_ponta_keywords)
+                is_ponta = any(kw in desc for kw in ponta_keywords) and not is_fora_ponta
+                
+                if is_ponta:
+                    ponta += value
+                elif is_fora_ponta:
+                    fora_ponta += value
+                else:
+                    total += value
+                
+                snippets.append({
+                    'campo': 'consumo_generico',
+                    'trecho': f"{row[desc_col]}: {value} kWh",
+                    'confidence_ocr': 0
+                })
+                
+            except Exception:
+                continue
+        
+        # Return results if any consumption was found
+        if ponta > 0 or fora_ponta > 0 or total > 0:
+            return {
+                'ponta': ponta,
+                'fora_ponta': fora_ponta,
+                'total': total,
+                'snippets': snippets
+            }
+        
+        return None
 
     def _extract_valor_total(self, field_map: Dict) -> Optional[float]:
         """Extract total value"""
