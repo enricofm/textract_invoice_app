@@ -9,23 +9,20 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Configuration
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Create upload folder if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
-    """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        return '', 204  # Prevent form resubmission on refresh
+        return '', 204
     return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])

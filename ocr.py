@@ -130,10 +130,10 @@ def extract_expense_data(client, document_path):
                 else:
                     images = convert_from_path(document_path, first_page=1, last_page=1, dpi=300)
             except Exception as pdf_error:
-                raise Exception(f"Poppler not found. Please install Poppler: {pdf_error}")
+                raise RuntimeError(f"Poppler not found. Please install Poppler: {pdf_error}")
             
             if not images:
-                raise Exception("Failed to convert PDF to image")
+                raise RuntimeError("Failed to convert PDF to image")
             
             # Convert PIL Image to bytes
             import io
@@ -306,7 +306,7 @@ def extract_complete_invoice_data(client, document_path):
             images = convert_from_path(path, first_page=page_num, last_page=page_num, dpi=300)
         
         if not images:
-            raise Exception(f"Failed to convert PDF page {page_num} to image")
+            raise RuntimeError(f"Failed to convert PDF page {page_num} to image")
         
         img_byte_arr = io.BytesIO()
         images[0].save(img_byte_arr, format='PNG')
@@ -326,7 +326,7 @@ def extract_complete_invoice_data(client, document_path):
     
     # Try to extract expense data (analyze_expense processes all pages automatically)
     try:
-        print(f"Processing document with analyze_expense...")
+        print("Processing document with analyze_expense...")
         expense_response = client.analyze_expense(Document={'Bytes': document_bytes})
         
         for expense_doc in expense_response["ExpenseDocuments"]:
@@ -389,6 +389,7 @@ def extract_complete_invoice_data(client, document_path):
                 num_pages = pdf_info.get('Pages', 1)
             except:
                 num_pages = 1
+                raise
             
             print(f"Processing {num_pages} page(s)...")
             
@@ -443,7 +444,7 @@ def extract_complete_invoice_data(client, document_path):
     # Extract tables (only if not already extracted page-by-page)
     if not result['tables']:
         try:
-            print(f"Extracting tables from document...")
+            print("Extracting tables from document...")
             tables = extract_tables_from_document(client, document_bytes)
             result['tables'] = tables
         except Exception as e:
