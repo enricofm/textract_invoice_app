@@ -478,7 +478,7 @@
             const lineItems = document.getElementById('lineItems');
 
             if (data.summary_fields && data.summary_fields.length > 0) {
-                data.summary_fields.forEach(field => {
+                for (const field of data.summary_fields) {
                     const fieldDiv = document.createElement('div');
                     fieldDiv.className = 'field-group';
                     fieldDiv.innerHTML = `
@@ -489,7 +489,7 @@
                         </div>
                     `;
                     summaryFields.appendChild(fieldDiv);
-                });
+                }
             } else {
                 summaryFields.innerHTML += '<p>Nenhum campo resumido encontrado</p>';
             }
@@ -497,7 +497,7 @@
             lineItems.innerHTML = '<h3 style="margin-bottom: 15px; margin-top: 20px;">Itens de Linha</h3>';
 
             if (data.line_items && data.line_items.length > 0) {
-                data.line_items.forEach((item, index) => {
+                for (const [index, item] of data.line_items.entries()) {
                     const itemDiv = document.createElement('div');
                     itemDiv.className = 'line-item';
                     let itemHtml = `<strong>Item ${index + 1}</strong><br>`;
@@ -508,7 +508,7 @@
 
                     itemDiv.innerHTML = itemHtml;
                     lineItems.appendChild(itemDiv);
-                });
+                }
             } else {
                 lineItems.innerHTML += '<p>Nenhum item de linha encontrado</p>';
             }
@@ -520,7 +520,7 @@
             if (data.tables && data.tables.length > 0) {
                 tablesSection.innerHTML = '<h3 style="margin-bottom: 15px; margin-top: 20px;">Tabelas de Consumo</h3>';
 
-                data.tables.forEach((table, tableIndex) => {
+                for (const [tableIndex, table] of data.tables.entries()) {
                     const tableContainer = document.createElement('div');
                     tableContainer.className = 'table-container';
 
@@ -537,11 +537,11 @@
                         const thead = document.createElement('thead');
                         const headerRow = document.createElement('tr');
 
-                        table[0].forEach(cell => {
+                        for (const cell of table[0]) {
                             const th = document.createElement('th');
                             th.textContent = cell || '';
                             headerRow.appendChild(th);
-                        });
+                        }
 
                         thead.appendChild(headerRow);
                         tableElement.appendChild(thead);
@@ -553,11 +553,11 @@
                             for (let i = 1; i < table.length; i++) {
                                 const row = document.createElement('tr');
 
-                                table[i].forEach(cell => {
+                                for (const cell of table[i]) {
                                     const td = document.createElement('td');
                                     td.textContent = cell || '';
                                     row.appendChild(td);
-                                });
+                                }
 
                                 tbody.appendChild(row);
                             }
@@ -568,7 +568,7 @@
 
                     tableContainer.appendChild(tableElement);
                     tablesSection.appendChild(tableContainer);
-                });
+                }
             }
 
             results.style.display = 'block';
@@ -576,7 +576,7 @@
 
         document.getElementById('downloadBtn').addEventListener('click', () => {
             if (outputFilename) {
-                window.location.href = `/download/${outputFilename}`;
+                globalThis.location.href = `/download/${outputFilename}`;
             }
         });
 
