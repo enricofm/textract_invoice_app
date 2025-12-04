@@ -365,32 +365,64 @@ class InvoiceNormalizer:
         FORA_PONTA_KEYWORDS = ['FORA PONTA', 'FPONTA', 'F PONTA', 'F.PONTA', 'HFP', 'FORA DE PONTA']
         EXCLUDE_KEYWORDS = ['DESC', 'DESCONTO', 'CREDITO', 'CREDIT', 'AJUSTE', 'DEMANDA', 'REATIVA']
         
-        # Search in tables for consumption data
+        # Track which values we've already extracted to avoid duplicates
+        extracted_values = set()
+        
+        # Prioritize meter reading table (more accurate)
+        meter_table = None
+        invoice_table = None
+        
         for table in tables:
-            # Check if this is a meter reading table
-            if len(table) > 0:
+            if len(table) > 1:
                 header_row = ' '.join(table[0]).upper()
+                # Identify meter reading table (has columns like Medidor, Grandezas, Leitura)
+                if any(kw in header_row for kw in ['MEDIDOR', 'GRANDEZA', 'LEITURA ANTERIOR', 'LEITURA ATUAL', 'CONST']):
+                    meter_table = table
+                # Identify invoice items table (has columns like Itens, Quant, Valor)
+                elif any(kw in header_row for kw in ['ITENS', 'ITEM', 'QUANT', 'PREÇO']):
+                    invoice_table = table
+        
+        # Try meter table first (most reliable)
+        if meter_table:
+            result = self._extract_from_generic_table(
+                meter_table, ENERGY_KEYWORDS, PONTA_KEYWORDS, 
+                FORA_PONTA_KEYWORDS, EXCLUDE_KEYWORDS
+            )
+            
+            if result:
+                consumo_ponta = result.get('ponta', 0)
+                consumo_fora_ponta = result.get('fora_ponta', 0)
+                if result.get('total'):
+                    consumo_kwh = result['total']
                 
-                # Try to extract consumption using generic table analysis
-                if consumo_kwh is None and len(table) > 1:
-                    result = self._extract_from_generic_table(
-                        table, ENERGY_KEYWORDS, PONTA_KEYWORDS, 
-                        FORA_PONTA_KEYWORDS, EXCLUDE_KEYWORDS
-                    )
-                    
-                    if result:
-                        consumo_ponta += result.get('ponta', 0)
-                        consumo_fora_ponta += result.get('fora_ponta', 0)
-                        if result.get('total'):
-                            consumo_kwh = (consumo_kwh or 0) + result['total']
-                        
-                        # Add snippets
-                        for snippet in result.get('snippets', []):
-                            self.raw_snippets.append(snippet)
+                # Track extracted values
+                for snippet in result.get('snippets', []):
+                    self.raw_snippets.append(snippet)
+                    # Extract numeric value to track
+                    value_match = re.search(r'([\d.,]+)\s*kWh', snippet['trecho'])
+                    if value_match:
+                        extracted_values.add(value_match.group(1))
+        
+        # If meter table didn't provide consumption, try invoice table
+        if consumo_kwh is None and invoice_table:
+            result = self._extract_from_generic_table(
+                invoice_table, ENERGY_KEYWORDS, PONTA_KEYWORDS, 
+                FORA_PONTA_KEYWORDS, EXCLUDE_KEYWORDS
+            )
+            
+            if result:
+                consumo_ponta = result.get('ponta', 0)
+                consumo_fora_ponta = result.get('fora_ponta', 0)
+                if result.get('total'):
+                    consumo_kwh = result['total']
+                
+                # Add snippets
+                for snippet in result.get('snippets', []):
+                    self.raw_snippets.append(snippet)
         
         # Calculate total consumption from ponta + fora ponta
         if consumo_ponta > 0 or consumo_fora_ponta > 0:
-            consumo_kwh = consumo_ponta + consumo_fora_ponta
+            consumo_kwh = round(consumo_ponta + consumo_fora_ponta, 3)
             self.raw_snippets.append({
                 'campo': 'consumo_total',
                 'trecho': f"Ponta: {consumo_ponta} kWh + Fora Ponta: {consumo_fora_ponta} kWh = {consumo_kwh} kWh",
@@ -508,7 +540,17 @@ class InvoiceNormalizer:
             
             # Check if this is an energy consumption row
             has_energy_keyword = any(kw in desc for kw in energy_keywords)
-            has_kwh_unit = 'KWH' in unit or 'KW' in unit
+            # CRITICAL: Only accept kWh (consumption), NOT kW (demand/power)
+            has_kwh_unit = 'KWH' in unit
+            # Exclude if it's kW without kWh (demand, not consumption)
+            is_kw_only = 'KW' in unit and 'KWH' not in unit
+            
+            # Also check description for kW vs kWh indicators
+            desc_has_kw_only = ('FIO' in desc and 'KW' in desc and 'KWH' not in desc) or \
+                               (desc.endswith('-KW') or desc.endswith(' KW'))
+            
+            if is_kw_only or desc_has_kw_only:
+                continue  # Skip demand values (kW)
             
             if not (has_energy_keyword or has_kwh_unit):
                 continue
@@ -542,9 +584,9 @@ class InvoiceNormalizer:
         # Return results if any consumption was found
         if ponta > 0 or fora_ponta > 0 or total > 0:
             return {
-                'ponta': ponta,
-                'fora_ponta': fora_ponta,
-                'total': total,
+                'ponta': round(ponta, 3),
+                'fora_ponta': round(fora_ponta, 3),
+                'total': round(total, 3),
                 'snippets': snippets
             }
         
@@ -638,6 +680,19 @@ class InvoiceNormalizer:
                 header_row_idx = 1 if first_row_empty and len(table) > 2 else 0
                 header_row = [str(col).upper() for col in table[header_row_idx]]
                 
+                # Identify Value column dynamically
+                value_col_idx = -1
+                for idx, col in enumerate(header_row):
+                    if 'VALOR' in col and 'UNIT' not in col:
+                        value_col_idx = idx
+                        break
+                    if 'TOTAL' in col and 'PAGAR' not in col:  # Avoid "Total a Pagar" column if strictly looking for line item values
+                        value_col_idx = idx
+                        break
+                    if 'AMOUNT' in col:
+                        value_col_idx = idx
+                        break
+                
                 # Look for tables with ICMS and PIS/COFINS columns (EDP format)
                 icms_col_idx = None
                 pis_cofins_col_idx = None
@@ -656,7 +711,8 @@ class InvoiceNormalizer:
                     
                     # EDP format: ICMS with currency indicator
                     if 'ICMS' in col_upper and '(' in col_upper and 'R$' in col_upper and icms_col_idx is None:
-                        icms_col_idx = idx
+                        if 'BASE' not in col_upper and 'ALIQ' not in col_upper and 'CALC' not in col_upper:
+                            icms_col_idx = idx
                     
                     # Generic format: separate tax columns (CPFL, CEMIG, etc)
                     # ICMS column (not base calculation, not aliquot, not percentage)
@@ -744,33 +800,94 @@ class InvoiceNormalizer:
                                 componentes['cofins'] = cofins_val
             
             # Standard row-by-row search
-            for row in table:
+            for row in table[header_row_idx + 1:] if len(table) > header_row_idx + 1 else table:
                 if len(row) >= 2:
-                    desc = row[0].upper()
-                    valor_text = row[-1]  # Last column usually has values
+                    desc = str(row[0]).upper().strip()
+                    if not desc: # Try second column if first is empty (common in some tables)
+                         desc = str(row[1]).upper().strip() if len(row) > 1 else ""
                     
+                    # Determine which column has the value
+                    if value_col_idx != -1 and len(row) > value_col_idx:
+                        valor_text = row[value_col_idx]
+                    else:
+                        valor_text = row[-1]  # Fallback to last column
+                    
+                    # Skip rows that look like headers or non-items
+                    if any(x in desc for x in ['TOTAL', 'SOMA', 'SUBTOTAL', 'VENCIMENTO', 'REFERENTE', 'MÊS', 'LEITURA', 'INSTALAÇÃO', 'CLIENTE', 'PÁGINA']):
+                        continue
+                    if '/' in desc and any(c.isdigit() for c in desc): # Skip dates like 11/2024
+                        continue
+                    if len(desc) < 3: # Skip short codes
+                        continue
+                    if desc.replace('.','').replace('-','').isdigit(): # Skip numeric IDs
+                        continue
+                        
                     # Try to match components
                     if 'ENERGIA' in desc and not componentes['energia']:
-                        componentes['energia'] = self._parse_currency(valor_text)
-                    elif 'TUSD' in desc or 'TUST' in desc:
-                        componentes['tusd_tust'] = self._parse_currency(valor_text)
+                        val = self._parse_currency(valor_text)
+                        # Sanity check: Energy value usually > 1 (unless it's a rate, which we want to avoid)
+                        # But sometimes energy can be small. 
+                        # If value < 1 and it's not the only energy item, it might be a rate.
+                        if val and val > 0:
+                            # Heuristic: If value is very small (< 1) and we are not sure it's the value column, ignore it
+                            if val < 1 and value_col_idx == -1:
+                                continue
+                            componentes['energia'] = val
+                            
+                    elif ('TUSD' in desc or 'TUST' in desc):
+                        val = self._parse_currency(valor_text)
+                        if val and val > 0:
+                            # TUSD can be the main energy component
+                            if componentes['tusd_tust']:
+                                componentes['tusd_tust'] += val
+                            else:
+                                componentes['tusd_tust'] = val
+                                
                     elif 'BANDEIRA' in desc:
-                        componentes['bandeira_valor'] = self._parse_currency(valor_text)
+                        val = self._parse_currency(valor_text)
+                        if val and val > 0:
+                            componentes['bandeira_valor'] = val
                         # Try to extract bandeira type
                         for bandeira, pattern in self.BANDEIRA_PATTERNS.items():
                             if re.search(pattern, desc):
                                 componentes['bandeira'] = bandeira
                                 break
+                                
                     elif 'ICMS' in desc and not componentes['icms']:
-                        componentes['icms'] = self._parse_currency(valor_text)
+                         # Avoid picking up ICMS rate or base
+                        if 'BASE' not in desc and 'ALIQ' not in desc:
+                            val = self._parse_currency(valor_text)
+                            if val and val > 0:
+                                componentes['icms'] = val
+                                
                     elif ('PIS' in desc or 'PASEP' in desc) and not componentes['pis']:
-                        componentes['pis'] = self._parse_currency(valor_text)
+                        val = self._parse_currency(valor_text)
+                        if val and val > 0:
+                            componentes['pis'] = val
+                            
                     elif 'COFINS' in desc and not componentes['cofins']:
-                        componentes['cofins'] = self._parse_currency(valor_text)
+                        val = self._parse_currency(valor_text)
+                        if val and val > 0:
+                            componentes['cofins'] = val
+                            
                     else:
                         # Other components
+                        # Avoid adding duplicate taxes to "outros"
+                        if any(x in desc for x in ['ICMS', 'PIS', 'PASEP', 'COFINS', 'TOTAL']):
+                            continue
+                            
                         valor = self._parse_currency(valor_text)
                         if valor and valor > 0:
+                            # Filter out obvious non-monetary values (like consumption ~100000 or ID ~3000000000)
+                            # Heuristic: If value is exactly equal to an extracted consumption or code, skip it
+                            # But checking that is hard here.
+                            # Check if it matches the Total Bill exactly (like 365k) -> already excluded by TOTAL check?
+                            # No, because description was "NOV/2024". Now excluded by date check.
+                            
+                            # Check for very large integers that look like installation codes
+                            if valor > 100000000: 
+                                continue
+                                
                             componentes['outros'].append({
                                 'nome': row[0],
                                 'valor': valor
@@ -838,12 +955,18 @@ class InvoiceNormalizer:
         value_str = re.sub(r'[^\d.,\-]', '', value_str)
         
         # Handle Brazilian format
-        if ',' in value_str and '.' in value_str:
-            # Format: 1.234,56
+        if ',' in value_str:
+            # Has comma, so dots are thousands separators (ignore them) and comma is decimal
             value_str = value_str.replace('.', '').replace(',', '.')
-        elif ',' in value_str:
-            # Format: 1234,56
-            value_str = value_str.replace(',', '.')
+        else:
+            # No comma. Check for dots used as thousand separators
+            if value_str.count('.') > 1:
+                value_str = value_str.replace('.', '')
+            elif '.' in value_str:
+                parts = value_str.split('.')
+                if len(parts) == 2 and len(parts[1]) == 3:
+                     # It has exactly 3 decimals (e.g. 1.000 or 46.510) - treat as thousands separator
+                     value_str = value_str.replace('.', '')
         
         try:
             return float(value_str)
